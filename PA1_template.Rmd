@@ -5,21 +5,202 @@ output:
     keep_md: true
 ---
 
-
 ## Loading and preprocessing the data
+```{r}
+steps <- read.csv(
+  unz('activity.zip', 'activity.csv'),
+  colClasses = c('integer', 'Date', 'integer'),
+  na.strings = 'NA'
+)
+```
 
+The `date` column has already been converted to the appropriate format. It is still necessary to convert `interval` to a more standard format.
 
+```{r}
+interval <- sprintf('%04d', steps$interval)
+steps$interval <- format(
+  strptime(interval, format = '%H%M'),
+  format = '%H:%M'
+)
+```
 
 ## What is mean total number of steps taken per day?
 
+First, let's calculate daily metrics.
 
+```{r, message=FALSE}
+library(dplyr)
+
+steps_per_day <- steps %>% 
+  group_by(date) %>%
+  summarise(total = sum(steps, na.rm = TRUE),
+            median = median(steps, na.rm = TRUE),
+            mean = mean(steps, na.rm = TRUE))
+```
+
+Now let's plot the total number of steps for each day.
+
+```{r}
+barplot(steps_per_day$total, names.arg = steps_per_day$date)
+title(
+  main = 'Total number of steps per day',
+  xlab = 'Date',
+  ylab = 'Number of steps'
+)
+```
+
+And finally, report the mean and median steps.
+
+```{r}
+# The second column, where the total is, needs to be removed
+# so we report only the mean and median
+# n = Inf guarantees the entire tibble is printed
+print(steps_per_day[-2], n = Inf)
+```
 
 ## What is the average daily activity pattern?
 
+Let's plot the average number of steps for each time interval.
 
+```{r, message=FALSE}
+steps_per_interval <- steps %>% 
+  group_by(interval) %>%
+  summarise(average = mean(steps, na.rm = TRUE))
+
+with(steps_per_interval,{
+  plot(
+     as.factor(interval), average,
+     main = 'Average activity pattern',
+     xlab = 'Time of day',
+     ylab = 'Average number of steps'
+  )
+  points(as.factor(interval), average, type = 'l')
+})
+```
+
+```{r,results='hide'}
+greatest_index <- which.max(steps_per_interval$average)
+greatest_interval <- steps_per_interval$interval[greatest_index] 
+```
+
+The interval which has the greatest number of steps on average is `r greatest_interval`.
 
 ## Imputing missing values
 
+Let's first analyse the missing value distribution
 
+```{r, message=FALSE}
+library(data.table)
+library(lattice)
+
+steps_DT <- as.data.table(steps)
+missing_values <- steps_DT[, sum(is.na(steps)), by = .(date, interval)]
+
+xyplot(V1 ~ as.factor(interval) | date, missing_values, alpha = 0.1)
+```
+
+It isn't pretty, but we can see that NAs are only present when data for the entire day is missing.
+
+We'll fill these values assuming activity remains relatively constant across weekdays in the same time interval. Thus the NAs will be replaced by the mean of the number of steps per weekday for that time interval through the entire dataset. We'll call the new dataset `steps_filled`
+
+```{r}
+steps_filled <- steps
+
+na_means <- steps_DT[, mean(steps, na.rm = TRUE), by = .(weekdays(date), interval)]
+na_indices <- which(is.na(steps$steps))
+
+for(i in na_indices){
+  wday <- weekdays(steps[[i, 2]])
+  int <- steps[[i, 3]]
+  impute_value <- subset(na_means,weekdays == wday & interval == int)$V1
+  steps_filled[[i, 1]] <- impute_value
+}
+```
+
+Let's check if it actually worked
+
+```{r}
+print(table(is.na(steps$steps)))
+print(table(is.na(steps_filled$steps)))
+```
+
+Now let's check again the metrics we calculated before imputing.
+First up number of steps per day. For comparison's sake, we'll also redraw the previous plot.
+
+```{r, message=FALSE}
+steps_filled_per_day <- steps_filled %>% 
+  group_by(date) %>%
+  summarise(total = sum(steps, na.rm = TRUE),
+            median = median(steps, na.rm = TRUE),
+            mean = mean(steps, na.rm = TRUE))
+
+par(mfcol = c(1, 2))
+
+barplot(steps_per_day$total, names.arg = steps_per_day$date)
+title(
+  main = 'Steps per day',
+  xlab = 'Date',
+  ylab = 'Number of steps'
+)
+
+barplot(steps_filled_per_day$total, names.arg = steps_per_day$date)
+title(
+  main = 'Steps per day (filled)',
+  xlab = 'Date',
+  ylab = 'Number of steps'
+)
+
+```
+
+Then mean and median.
+
+```{r}
+print(steps_per_day[-2], n = Inf)
+```
+
+As expected, the daily number of steps increased only for the days which had no reported data, since all missing values were then. From the plot above, it's clear that imputing made changes particularly to the final days of data collection.
+
+Mean and median weren't affected as much overall for the same reasons described above.
 
 ## Are there differences in activity patterns between weekdays and weekends?
+
+Let's begin by creating a factor that classifies dates as weekdays or weekends in the dataset.
+
+```{r}
+day_type <- as.factor(
+  format(steps$date, '%w') %in% c('0', '6')
+)
+levels(day_type) <- c('weekday', 'weekend')
+```
+
+Now let's plot the average number of steps for each time interval, separating weekdays from weekends. We'll use the dataset with no missing values we just created.
+
+```{r, message=FALSE}
+weekday_means <- steps_filled %>%
+  filter(day_type == 'weekday') %>%
+  group_by(interval) %>%
+  summarise(mean = mean(steps))
+weekend_means <- steps_filled %>%
+  filter(day_type == 'weekend') %>%
+  group_by(interval) %>%
+  summarise(mean = mean(steps))
+
+par(mfrow = c(2, 1), mar = c(3, 2, 1, 1))
+
+with(weekday_means, {
+  plot(
+    as.factor(interval), mean,
+    main = 'Weekday activity',
+  )
+  points(as.factor(interval), mean, type = 'l')
+})
+with(weekend_means, {
+  plot(
+    as.factor(interval), mean,
+    main = 'Weekend activity',
+  )
+  points(as.factor(interval), mean, type = 'l')
+})
+
+```
+
